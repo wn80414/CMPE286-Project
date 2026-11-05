@@ -1,248 +1,309 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { createBrowserClient } from '@supabase/ssr';
-import { Shield, Lock, Unlock, AlertCircle, CheckCircle2, Cpu, ChevronRight, RefreshCw, LogOut } from 'lucide-react';
+import { Settings } from 'lucide-react';
+import { getMqttClient } from '../lib/mqttClient';
 
-interface Device {
-  id: string;
-  name: string;
-  status: 'ONLINE' | 'OFFLINE';
-  lockState: 'LOCKED' | 'UNLOCKED';
-}
-
-interface LogEntry {
-  id: string;
-  device_id: string;
-  card_uid: string;
-  status: 'AUTHORIZED' | 'DENIED';
-  created_at: string;
-}
-
-const DEVICES: Device[] = [
-  { id: 'front_door_01', name: 'Front Entrance', status: 'ONLINE', lockState: 'LOCKED' },
-  { id: 'server_room_02', name: 'Server Room Rack', status: 'ONLINE', lockState: 'LOCKED' },
-  { id: 'side_gate_03', name: 'Side Exit Gate', status: 'OFFLINE', lockState: 'LOCKED' },
-];
-
-const INITIAL_LOGS: LogEntry[] = [
-  { id: '1', device_id: 'front_door_01', card_uid: 'AB:CD:EF:12', status: 'AUTHORIZED', created_at: new Date(Date.now() - 1000 * 60 * 5).toISOString() },
-  { id: '2', device_id: 'front_door_01', card_uid: '99:88:77:66', status: 'DENIED', created_at: new Date(Date.now() - 1000 * 60 * 25).toISOString() },
-  { id: '3', device_id: 'server_room_02', card_uid: '11:22:33:44', status: 'AUTHORIZED', created_at: new Date(Date.now() - 1000 * 60 * 60).toISOString() },
-  { id: '4', device_id: 'side_gate_03', card_uid: 'DE:AD:BE:EF', status: 'DENIED', created_at: new Date(Date.now() - 1000 * 60 * 120).toISOString() },
-];
+import Sidebar, { Device } from './components/Sidebar';
+import LockControl from './components/LockControl';
+import AccessLogs, { LogEntry } from './components/AccessLogs';
+import UserManagement from './components/UserManagement';
+import RegisterDeviceModal from './components/RegisterDeviceModal';
+import EditDeviceModal from './components/EditDeviceModal';
 
 export default function DashboardPage() {
-  const [devices, setDevices] = useState<Device[]>(DEVICES);
-  const [selectedDevice, setSelectedDevice] = useState<Device>(DEVICES[0]);
-  const [logs, setLogs] = useState<LogEntry[]>(INITIAL_LOGS);
-  
+  const [mounted, setMounted] = useState(false);
+  const [activeTab, setActiveTab] = useState<'devices' | 'users'>('devices');
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [mqttClient, setMqttClient] = useState<any>(null);
+  const [mqttStatus, setMqttStatus] = useState<'CONNECTED' | 'DISCONNECTED'>('CONNECTED');
+
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+
   const router = useRouter();
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
   );
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    router.push('/login');
-    router.refresh();
-  };
+  useEffect(() => {
+    setMounted(true);
+    fetchDevices();
+  }, []);
 
-  const toggleLock = (action: 'LOCKED' | 'UNLOCKED') => {
-    setDevices((prev) =>
-      prev.map((d) => (d.id === selectedDevice.id ? { ...d, lockState: action } : d))
-    );
-    setSelectedDevice((prev) => ({ ...prev, lockState: action }));
-  };
+  useEffect(() => {
+    const client = getMqttClient();
+    setMqttClient(client);
 
-  const simulateScan = (status: 'AUTHORIZED' | 'DENIED') => {
-    const randomHex = Array.from({ length: 4 }, () => 
-      Math.floor(Math.random() * 256).toString(16).padStart(2, '0')
-    ).join(':').toUpperCase();
+    let timeoutId: NodeJS.Timeout;
 
-    const newLog: LogEntry = {
-      id: Math.random().toString(),
-      device_id: selectedDevice.id,
-      card_uid: randomHex,
-      status,
-      created_at: new Date().toISOString(),
+    const updateStatus = () => {
+      if (client.connected) {
+        clearTimeout(timeoutId);
+        setMqttStatus('CONNECTED');
+      } else {
+        timeoutId = setTimeout(() => {
+          setMqttStatus(client.connected ? 'CONNECTED' : 'DISCONNECTED');
+        }, 3000);
+      }
+    };
+    
+    updateStatus();
+    client.on('connect', () => {
+      clearTimeout(timeoutId);
+      setMqttStatus('CONNECTED');
+    });
+    client.on('offline', () => updateStatus());
+    client.on('error', () => updateStatus());
+
+    return () => {
+      clearTimeout(timeoutId);
+      client.removeAllListeners('connect');
+      client.removeAllListeners('offline');
+      client.removeAllListeners('error');
+    };
+  }, []);
+
+  // Global Message Listener & Database Authentication Engine
+  useEffect(() => {
+    if (!mqttClient) return;
+
+    if (selectedDevice) {
+      fetchLogs(selectedDevice.id);
+    }
+
+    mqttClient.subscribe('+/status');
+    mqttClient.subscribe('+/scan');
+
+    const handleMessage = async (topic: string, message: Buffer) => {
+      try {
+        const payload = JSON.parse(message.toString());
+
+        // --- 1. HANDLE RFID CARD SCANS & ROLE AUTHENTICATION ---
+        if (topic.endsWith('/scan') && payload.card_uid) {
+          const deviceIdFromTopic = topic.split('/')[0];
+          const scannedUid = payload.card_uid;
+
+          // A. Query Supabase for user details including first_name, last_name, and title
+          const { data: userRecord } = await supabase
+            .from('users')
+            .select('id, card_uid, role_id, first_name, last_name, title, is_active')
+            .eq('card_uid', scannedUid)
+            .single();
+
+          let accessStatus = 'DENIED';
+          let formattedUserName = 'Unknown / Unregistered User';
+
+          if (userRecord) {
+            const nameParts = [userRecord.first_name, userRecord.last_name].filter(Boolean);
+            formattedUserName = nameParts.join(' ');
+            if (userRecord.title) {
+              formattedUserName += ` (${userRecord.title})`;
+            }
+
+            if (userRecord.is_active !== false) {
+              const { data: allowedRoleCheck } = await supabase
+                .from('device_allowed_roles')
+                .select('*')
+                .eq('device_id', deviceIdFromTopic)
+                .eq('role_id', userRecord.role_id)
+                .single();
+
+              if (allowedRoleCheck) {
+                accessStatus = 'GRANTED';
+              }
+            }
+          }
+
+          // B. Publish response to hardware
+          const controlTopic = `${deviceIdFromTopic}/set`;
+          const commandToSend = accessStatus === 'GRANTED' ? 'UNLOCKED' : 'DENIED';
+          mqttClient.publish(controlTopic, commandToSend);
+
+          // C. Insert log matching exact device_logs table schema (no user_name column)
+          const { data: logData, error: logError } = await supabase
+            .from('device_logs')
+            .insert([{ 
+              device_id: deviceIdFromTopic, 
+              card_uid: scannedUid, 
+              status: accessStatus 
+            }])
+            .select()
+            .single();
+
+          if (logError) {
+            console.error('Supabase Log Insertion Error:', logError.message);
+          } else if (logData) {
+            const enrichedLog = { ...logData, user_name: formattedUserName };
+            setSelectedDevice((currentSelected) => {
+              if (currentSelected && currentSelected.id === deviceIdFromTopic) {
+                setLogs((prev) => {
+                  const exists = prev.some((log) => log.id === enrichedLog.id);
+                  if (exists) return prev;
+                  return [enrichedLog, ...prev];
+                });
+              }
+              return currentSelected;
+            });
+          }
+          return;
+        }
+
+        // --- 2. HANDLE STATUS & LWT UPDATES ---
+        const topicMatch = topic.match(/^(.+)\/status$/);
+        if (topicMatch) {
+          const deviceIdFromTopic = topicMatch[1];
+
+          if (payload.status && (payload.status === 'ONLINE' || payload.status === 'OFFLINE')) {
+            const newStatus = payload.status;
+
+            setDevices((prev) =>
+              prev.map((d) => (d.id === deviceIdFromTopic ? { ...d, status: newStatus } : d))
+            );
+
+            setSelectedDevice((prev) => 
+              prev && prev.id === deviceIdFromTopic ? { ...prev, status: newStatus } : prev
+            );
+
+            await supabase
+              .from('devices')
+              .update({ status: newStatus })
+              .eq('id', deviceIdFromTopic);
+          }
+        }
+      } catch (e) {
+        console.error('MQTT Parse or Auth Engine Error:', e);
+      }
     };
 
-    setLogs((prev) => [newLog, ...prev]);
+    mqttClient.on('message', handleMessage);
+
+    return () => {
+      mqttClient.off('message', handleMessage);
+    };
+  }, [mqttClient, selectedDevice]);
+
+  const fetchDevices = async () => {
+    const { data } = await supabase.from('devices').select('*').order('name');
+    if (data && data.length > 0) {
+      setDevices(data);
+      setSelectedDevice((prev) => {
+        if (!prev) return data[0];
+        const exists = data.find((d) => d.id === prev.id);
+        return exists || data[0];
+      });
+    }
   };
 
-  const filteredLogs = logs.filter((log) => log.device_id === selectedDevice.id);
+  // Fetch logs and map them with user details (first_name, last_name, title)
+  const fetchLogs = async (deviceId: string) => {
+    const [logsRes, usersRes] = await Promise.all([
+      supabase.from('device_logs').select('*').eq('device_id', deviceId).order('created_at', { ascending: false }),
+      supabase.from('users').select('card_uid, first_name, last_name, title')
+    ]);
+
+    if (logsRes.data) {
+      const userMap = new Map();
+      if (usersRes.data) {
+        usersRes.data.forEach((u: any) => {
+          const nameParts = [u.first_name, u.last_name].filter(Boolean);
+          let nameStr = nameParts.join(' ');
+          if (u.title) nameStr += ` (${u.title})`;
+          userMap.set(u.card_uid, nameStr);
+        });
+      }
+
+      const formattedLogs = logsRes.data.map((log: any) => ({
+        ...log,
+        user_name: userMap.get(log.card_uid) || 'Unknown / Unregistered User'
+      }));
+
+      setLogs(formattedLogs);
+    }
+  };
+
+  const toggleLock = async (action: 'LOCKED' | 'UNLOCKED') => {
+    if (!selectedDevice || !mqttClient) return;
+    
+    const controlTopic = `${selectedDevice.id}/set`;
+    mqttClient.publish(controlTopic, action);
+
+    setDevices((prev) => prev.map((d) => (d.id === selectedDevice.id ? { ...d, lock_state: action } : d)));
+    setSelectedDevice((prev) => (prev ? { ...prev, lock_state: action } : null));
+    
+    await supabase.from('devices').update({ lock_state: action }).eq('id', selectedDevice.id);
+  };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex">
-      
-      {/* Sidebar: Device List */}
-      <aside className="w-80 border-r border-slate-800 p-6 flex flex-col justify-between">
-        <div className="space-y-6">
-          <div className="flex items-center justify-between font-bold text-lg">
-            <span className="flex items-center gap-2"><Shield className="text-indigo-500" /> Access Control</span>
-          </div>
-          
-          <div className="space-y-2">
-            <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold px-2">
-              Connected Devices
-            </p>
-            {devices.map((device) => {
-              const isSelected = device.id === selectedDevice.id;
-              return (
-                <button
-                  key={device.id}
-                  onClick={() => setSelectedDevice(device)}
-                  className={`w-full text-left p-3 rounded-xl flex items-center justify-between transition ${
-                    isSelected 
-                      ? 'bg-indigo-600/10 border border-indigo-500/30 text-indigo-300' 
-                      : 'bg-slate-900 border border-slate-800/60 hover:bg-slate-800/50 text-slate-300'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Cpu className={`w-5 h-5 ${isSelected ? 'text-indigo-400' : 'text-slate-500'}`} />
-                    <div>
-                      <p className="font-medium text-sm">{device.name}</p>
-                      <p className="text-xs text-slate-500 font-mono">{device.id}</p>
-                    </div>
-                  </div>
-                  <ChevronRight className={`w-4 h-4 ${isSelected ? 'text-indigo-400' : 'text-slate-600'}`} />
-                </button>
-              );
-            })}
-          </div>
-        </div>
+    <main className="min-h-screen bg-slate-950 text-slate-100 flex relative">
+      <Sidebar
+        devices={devices}
+        selectedDevice={selectedDevice}
+        onSelectDevice={setSelectedDevice}
+        onOpenAddModal={() => setIsAddModalOpen(true)}
+        mqttStatus={mqttStatus}
+        onSignOut={async () => {
+          await supabase.auth.signOut();
+          router.push('/login');
+          router.refresh();
+        }}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+      />
 
-        {/* User Sign Out Section */}
-        <div className="pt-4 border-t border-slate-800">
-          <button
-            onClick={handleSignOut}
-            className="w-full flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 py-2.5 rounded-lg text-xs font-medium transition"
-          >
-            <LogOut className="w-4 h-4 text-rose-400" /> Sign Out
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content Area */}
       <div className="flex-1 p-8 space-y-8 overflow-y-auto">
-        
-        <div className="flex justify-between items-center border-b border-slate-800 pb-4">
-          <div>
-            <h1 className="text-2xl font-bold">{selectedDevice.name}</h1>
-            <p className="text-xs text-slate-400 font-mono mt-1">Target ID: {selectedDevice.id}</p>
+        {mqttStatus === 'DISCONNECTED' && (
+          <div className="bg-amber-500/10 border border-amber-500/20 text-amber-400 px-4 py-3 rounded-xl flex items-center justify-between text-sm">
+            <span className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+              Lost connection to MQTT broker. Reconnecting...
+            </span>
           </div>
-          <span className={`text-xs px-3 py-1 rounded-full border ${
-            selectedDevice.status === 'ONLINE' 
-              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-              : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-          }`}>
-            {selectedDevice.status}
-          </span>
-        </div>
+        )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl flex flex-col justify-between">
-            <div>
-              <p className="text-sm text-slate-400">Current Lock State</p>
-              <div className="flex items-center gap-3 mt-3">
-                {selectedDevice.lockState === 'LOCKED' ? (
-                  <Lock className="w-8 h-8 text-rose-500" />
-                ) : (
-                  <Unlock className="w-8 h-8 text-emerald-500" />
-                )}
-                <span className="text-xl font-semibold tracking-wide">
-                  {selectedDevice.lockState}
-                </span>
-              </div>
-            </div>
-            
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => toggleLock('UNLOCKED')}
-                className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg font-medium transition"
-              >
-                Unlock
-              </button>
-              <button
-                onClick={() => toggleLock('LOCKED')}
-                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white py-2 rounded-lg font-medium transition"
-              >
-                Lock
-              </button>
-            </div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl flex flex-col justify-between">
-            <div>
-              <div className="flex items-center gap-2 text-sm text-slate-400">
-                <RefreshCw className="w-4 h-4 text-indigo-400" /> Mock Hardware Event Simulator
-              </div>
-              <p className="text-xs text-slate-500 mt-1">
-                Simulate an RFID badge scan on {selectedDevice.name} to test filtering and log updates.
-              </p>
-            </div>
-            
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => simulateScan('AUTHORIZED')}
-                className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2 rounded-lg text-sm font-medium transition"
-              >
-                Simulate Authorized Scan
-              </button>
-              <button
-                onClick={() => simulateScan('DENIED')}
-                className="flex-1 bg-amber-600/20 border border-amber-500/30 hover:bg-amber-600/30 text-amber-300 py-2 rounded-lg text-sm font-medium transition"
-              >
-                Simulate Denied Scan
-              </button>
-            </div>
-          </div>
-
-        </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <div className="p-4 border-b border-slate-800 font-semibold flex justify-between items-center">
-            <span>Access History for {selectedDevice.name}</span>
-            <span className="text-xs text-slate-500 font-normal">{filteredLogs.length} events recorded</span>
-          </div>
-          <div className="divide-y divide-slate-800">
-            {filteredLogs.length === 0 ? (
-              <p className="p-6 text-slate-500 text-center">No scan logs recorded for this device yet.</p>
-            ) : (
-              filteredLogs.map((log) => (
-                <div key={log.id} className="p-4 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    {log.status === 'AUTHORIZED' ? (
-                      <CheckCircle2 className="text-emerald-400 w-5 h-5" />
-                    ) : (
-                      <AlertCircle className="text-rose-400 w-5 h-5" />
-                    )}
-                    <div>
-                      <p className="font-mono text-sm">UID: {log.card_uid}</p>
-                      <p className="text-xs text-slate-400">Action: RFID Scan</p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className={`text-xs px-2 py-1 rounded font-medium ${
-                      log.status === 'AUTHORIZED' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
-                    }`}>
-                      {log.status}
-                    </span>
-                    <p className="text-xs text-slate-500 mt-1">
-                      {new Date(log.created_at).toLocaleTimeString()}
-                    </p>
-                  </div>
+        {activeTab === 'users' ? (
+          <UserManagement />
+        ) : selectedDevice ? (
+          <>
+            <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+              <div>
+                <div className="flex items-center gap-3">
+                  <h1 className="text-2xl font-bold">{selectedDevice.name}</h1>
+                  <button
+                    onClick={() => setIsEditModalOpen(true)}
+                    className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-indigo-400 hover:text-indigo-300 px-3 py-1 rounded-lg text-xs font-medium transition"
+                  >
+                    <Settings className="w-3.5 h-3.5" /> Edit Config & Roles
+                  </button>
                 </div>
-              ))
-            )}
-          </div>
-        </div>
+                <p className="text-xs text-slate-400 font-mono mt-1">Target ID: {selectedDevice.id}</p>
+              </div>
+              <span
+                className={`text-xs px-3 py-1 rounded-full border ${
+                  selectedDevice.status === 'ONLINE'
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                    : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                }`}
+              >
+                {selectedDevice.status}
+              </span>
+            </div>
 
+            <LockControl selectedDevice={selectedDevice} onToggleLock={toggleLock} />
+            <AccessLogs logs={logs} deviceName={selectedDevice.name} mounted={mounted} />
+          </>
+        ) : (
+          <div className="text-slate-500 text-center py-20">Select a device from the sidebar to begin.</div>
+        )}
       </div>
+
+      <RegisterDeviceModal isOpen={isAddModalOpen} onClose={() => setIsAddModalOpen(false)} onRegister={fetchDevices} />
+      <EditDeviceModal isOpen={isEditModalOpen} onClose={() => setIsEditModalOpen(false)} selectedDevice={selectedDevice} onUpdate={fetchDevices} />
     </main>
   );
 }
