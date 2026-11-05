@@ -8,7 +8,6 @@ export async function middleware(request: NextRequest) {
     },
   });
 
-  // Ensure environment variables are loaded properly
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
@@ -42,6 +41,13 @@ export async function middleware(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
 
+  // 0. Handle Root Path (/) -> Route based on auth state
+  if (pathname === '/') {
+    const redirectUrl = request.nextUrl.clone();
+    redirectUrl.pathname = user ? '/dashboard' : '/login';
+    return NextResponse.redirect(redirectUrl);
+  }
+
   // 1. Unauthenticated user trying to access /dashboard -> Send to /login
   if (!user && pathname.startsWith('/dashboard')) {
     const loginUrl = request.nextUrl.clone();
@@ -60,5 +66,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/login'],
+  matcher: ['/', '/dashboard/:path*', '/login'],
 };
