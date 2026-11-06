@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { UserCheck, UserX, Shield, Edit2, Trash2, UserPlus, AlertCircle, Check, X } from 'lucide-react';
+import { API_BASE } from '../../lib/api';
 import AddUserModal from './AddUserModal';
 
 export interface Role {
@@ -19,8 +20,6 @@ export interface User {
   role_id: string;
   is_active: boolean;
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
 export default function UserManagement() {
   const [users, setUsers] = useState<User[]>([]);

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Lock, Unlock, PlayCircle, Loader2 } from "lucide-react";
+import { API_BASE } from "../../lib/api";
 import { supabase } from "../../lib/supabaseClient";
 
 interface Device {
@@ -15,8 +16,6 @@ interface LockControlProps {
   selectedDevice: Device;
   onCommandSent: (command: string) => void;
 }
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 export default function LockControl({
   selectedDevice,
@@ -37,7 +36,7 @@ export default function LockControl({
 
       // 2. Dispatch command to device control endpoint
       const controlPromise = fetch(
-        `${API_URL}/api/devices/${selectedDevice.id}/control`,
+        `${API_BASE}/api/devices/${selectedDevice.id}/control`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -50,7 +49,7 @@ export default function LockControl({
       );
 
       // 3. Dispatch parallel POST to the manual audit action route
-      const auditPromise = fetch(`${API_URL}/api/audit/action`, {
+      const auditPromise = fetch(`${API_BASE}/api/audit/action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Settings } from 'lucide-react';
 
+import { API_BASE, WS_URL } from '../lib/api';
 import { supabase } from '../lib/supabaseClient';
 import Sidebar, { Device } from './components/Sidebar';
 import LockControl from './components/LockControl';
@@ -11,9 +12,6 @@ import AccessLogs, { LogEntry } from './components/AccessLogs';
 import UserManagement from './components/UserManagement';
 import RegisterDeviceModal from './components/RegisterDeviceModal';
 import EditDeviceModal from './components/EditDeviceModal';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://cmpe286-backend.onrender.com';
-const WS_URL = API_BASE.replace(/^https/, 'ws');
 
 export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Trash2, AlertTriangle, X, Shield, Check } from 'lucide-react';
+import { API_BASE } from '../../lib/api';
 import { Device } from './Sidebar';
 
 interface EditDeviceModalProps {
@@ -16,8 +17,6 @@ interface Role {
   name: string;
   is_allowed: boolean;
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
 export default function EditDeviceModal({ isOpen, onClose, selectedDevice, onUpdate }: EditDeviceModalProps) {
   const [roles, setRoles] = useState<Role[]>([]);
