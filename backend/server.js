@@ -11,8 +11,21 @@ const auditRoutes = require('./src/routes/auditRoutes');
 
 const app = express();
 
+const allowedOrigins = [
+  'https://cmpe286-project.vercel.app',
+  'http://localhost:3000'
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 

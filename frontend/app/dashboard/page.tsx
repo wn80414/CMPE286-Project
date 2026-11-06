@@ -12,7 +12,7 @@ import UserManagement from './components/UserManagement';
 import RegisterDeviceModal from './components/RegisterDeviceModal';
 import EditDeviceModal from './components/EditDeviceModal';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://cmpe286-backend.onrender.com';
 const WS_URL = API_BASE.replace(/^http/, 'ws');
 
 export default function DashboardPage() {
