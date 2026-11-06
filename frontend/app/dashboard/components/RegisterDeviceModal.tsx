@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { Cpu, X } from 'lucide-react';
-import { createBrowserClient } from '@supabase/ssr';
+import { supabase } from '../../lib/supabaseClient';
 
 interface RegisterDeviceModalProps {
   isOpen: boolean;
@@ -14,11 +14,6 @@ export default function RegisterDeviceModal({ isOpen, onClose, onRegister }: Reg
   const [newId, setNewId] = useState('');
   const [newName, setNewName] = useState('');
   const [loading, setLoading] = useState(false);
-
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
-  );
 
   if (!isOpen) return null;
 

@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { createBrowserClient } from '@supabase/ssr';
 import { Settings } from 'lucide-react';
 
+import { supabase } from '../lib/supabaseClient';
 import Sidebar, { Device } from './components/Sidebar';
 import LockControl from './components/LockControl';
 import AccessLogs, { LogEntry } from './components/AccessLogs';
@@ -13,32 +13,105 @@ import RegisterDeviceModal from './components/RegisterDeviceModal';
 import EditDeviceModal from './components/EditDeviceModal';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+const WS_URL = API_BASE.replace(/^http/, 'ws');
 
 export default function DashboardPage() {
   const [mounted, setMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<'devices' | 'users'>('devices');
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
+  
+  // Separate states for scan logs vs audit logs
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [mqttStatus, setMqttStatus] = useState<'CONNECTED' | 'DISCONNECTED'>('CONNECTED');
-
+  const [auditLogs, setAuditLogs] = useState<LogEntry[]>([]);
+  
+  const [mqttStatus, setMqttStatus] = useState<'CONNECTED' | 'DISCONNECTED'>('DISCONNECTED');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   const router = useRouter();
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
-  );
 
   useEffect(() => {
     setMounted(true);
     fetchDevices();
   }, []);
 
+  // 🌐 WEBSOCKET LISTENER
+  useEffect(() => {
+    if (!mounted) return;
+
+    let ws: WebSocket;
+    let reconnectTimeout: NodeJS.Timeout;
+
+    const connectWS = () => {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        setMqttStatus('CONNECTED');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.type === 'DEVICE_UPDATE') {
+            const { deviceId, status, lock_state } = data;
+
+            setDevices((prev) =>
+              prev.map((d) =>
+                d.id === deviceId
+                  ? {
+                      ...d,
+                      ...(status !== undefined && { status }),
+                      ...(lock_state !== undefined && { lock_state }),
+                    }
+                  : d
+              )
+            );
+
+            setSelectedDevice((prev) =>
+              prev && prev.id === deviceId
+                ? {
+                    ...prev,
+                    ...(status !== undefined && { status }),
+                    ...(lock_state !== undefined && { lock_state }),
+                  }
+                : prev
+            );
+          } else if (data.type === 'NEW_LOG') {
+            if (selectedDevice && selectedDevice.id === data.deviceId) {
+              fetchLogs(selectedDevice.id);
+              fetchAuditLogs(selectedDevice.id);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to parse incoming WebSocket message:', err);
+        }
+      };
+
+      ws.onclose = () => {
+        setMqttStatus('DISCONNECTED');
+        reconnectTimeout = setTimeout(connectWS, 3000);
+      };
+
+      ws.onerror = () => {
+        setMqttStatus('DISCONNECTED');
+        ws.close();
+      };
+    };
+
+    connectWS();
+
+    return () => {
+      clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+    };
+  }, [mounted, selectedDevice?.id]);
+
   useEffect(() => {
     if (selectedDevice) {
       fetchLogs(selectedDevice.id);
+      fetchAuditLogs(selectedDevice.id);
     }
   }, [selectedDevice]);
 
@@ -67,24 +140,28 @@ export default function DashboardPage() {
         setLogs(data);
       }
     } catch (err) {
-      console.error('Failed to fetch device logs from backend:', err);
+      console.error('Failed to fetch device scan logs:', err);
     }
   };
 
-  // Updated to handle 'TEMP_OPEN', 'LOCKED', and 'UNLOCKED'
+  const fetchAuditLogs = async (deviceId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/audit/${deviceId}/logs`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setAuditLogs(data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch audit logs:', err);
+    }
+  };
+
   const handleCommandSent = (command: string) => {
     if (!selectedDevice) return;
-
-    // If it's a permanent state change, optimistically update device lock_state in state
-    if (command === 'LOCKED' || command === 'UNLOCKED') {
-      setDevices((prev) => 
-        prev.map((d) => (d.id === selectedDevice.id ? { ...d, lock_state: command as 'LOCKED' | 'UNLOCKED' } : d))
-      );
-      setSelectedDevice((prev) => (prev ? { ...prev, lock_state: command as 'LOCKED' | 'UNLOCKED' } : null));
-    }
-
-    // Refresh logs after sending any command
     fetchLogs(selectedDevice.id);
+    fetchAuditLogs(selectedDevice.id);
   };
 
   return (
@@ -143,7 +220,14 @@ export default function DashboardPage() {
             </div>
 
             <LockControl selectedDevice={selectedDevice} onCommandSent={handleCommandSent} />
-            <AccessLogs logs={logs} deviceName={selectedDevice.name} mounted={mounted} />
+            
+            {/* Pass both logs and auditLogs independently */}
+            <AccessLogs 
+              logs={logs} 
+              auditLogs={auditLogs} 
+              deviceName={selectedDevice.name} 
+              mounted={mounted} 
+            />
           </>
         ) : (
           <div className="text-slate-500 text-center py-20">Select a device from the sidebar to begin.</div>

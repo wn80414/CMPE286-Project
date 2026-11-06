@@ -12,12 +12,6 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  // Debug: Print environment variables to browser console on load
-  useEffect(() => {
-    console.log('🔍 SUPABASE_URL:', process.env.NEXT_PUBLIC_SUPABASE_URL);
-    console.log('🔍 SUPABASE_KEY:', process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ? 'Loaded successfully' : 'MISSING!');
-  }, []);
-
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || '',
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''
@@ -41,7 +35,7 @@ export default function LoginPage() {
     });
 
     if (error) {
-      console.error('❌ Login Failed Object:', error);
+      console.error('Login Failed Object:', error);
       setErrorMsg(error.message);
       setLoading(false);
     } else {

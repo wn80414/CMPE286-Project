@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const supabase = require('../config/supabase'); // Adjust path to your supabase client if needed
+const supabase = require('../config/supabase');
 
 // ==================== USERS CRUD ====================
 
