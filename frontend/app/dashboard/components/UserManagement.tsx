@@ -7,6 +7,7 @@ import AddUserModal from './AddUserModal';
 export interface Role {
   id: string;
   name: string;
+  description?: string;
 }
 
 export interface User {
