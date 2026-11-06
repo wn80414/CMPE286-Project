@@ -1,5 +1,7 @@
 const supabase = require("../config/supabase");
-const mqttClient = require("../config/mqttClient");
+const mqttClient = process.env.VERCEL
+  ? null
+  : require("../config/mqttClient");
 
 // Get all registered devices
 const getDevices = async (req, res) => {
@@ -55,6 +57,12 @@ const getDeviceLogs = async (req, res) => {
 // Trigger physical lock/unlock action via MQTT and update DB
 const controlDeviceLock = async (req, res) => {
   try {
+    if (!mqttClient) {
+      return res.status(503).json({
+        error: "Device control is unavailable in the Vercel serverless deployment",
+      });
+    }
+
     const deviceId = req.params.id;
     const { action } = req.body; // 'TEMP_OPEN', 'LOCKED', or 'UNLOCKED'
 
